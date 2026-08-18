@@ -2,8 +2,11 @@ import numpy as np
 import torch
 from tqdm import tqdm
 from avex import load_model
-import tensorflow as tf
-import tensorflow_hub as hub
+
+import onnxruntime as ort
+from huggingface_hub import hf_hub_download
+#import tensorflow as tf
+#import tensorflow_hub as hub
 
 
 def extract_feature(window, encoder, model_name, device='cpu'):
@@ -58,25 +61,57 @@ def build_feature_bank(batdata, encoder, model_name, device='cpu'):
     # Returns one list of features and a numpy array of labels
     return feature_list, np.array(label_list)
 
+def build_perch_fb(batdata,device='cpu') : 
+    feature_list = []
+    label_list = []
+    print(f"Dataset type: {type(batdata)}")
+    model_path = hf_hub_download(
+        repo_id="justinchuby/Perch-onnx",
+        filename="perch_v2.onnx"
+    )
+    session = ort.InferenceSession(
+    model_path, 
+    providers=["CPUExecutionProvider"] if device=='cpu' else ["CUDAExecutionProvider", "CPUExecutionProvider"] 
+    )
+
+    for i in tqdm(range(len(batdata)), desc=f"Extracting perch 2.0"):
+            windows, labels = batdata[i]
+            windows = windows.numpy().astype(np.float32)
+            
+            batch_size = len(windows)
+            feats = []
+            for j in range(0,len(windows), batch_size) :
+                batch = windows[j:j+batch_size]
+                out = session.run(["spatial_embedding"], {"inputs": batch})[0]
+                feats.append(out)
+            # feats is [Num_Windows, Embedding_Dim]
+            feats = np.concatenate(feats, axis=0)
+            feature_list.append(feats)
+            label_list.append(labels.numpy())
+
+    return feature_list, np.array(label_list)
+        
+
 
 def extract_encoder(model_name, device='cpu'):
     """
     Loads the specified encoder model and returns it ready for feature extraction.
     model_name should be one of 'effnetb0', 'NLM_BEATs', or 'perch2'.
     """
-    if model_name in ['effnetb0', 'NLM_BEATs']:
+    if model_name in ['effnetb0', 'NLM_BEATs', 'perch2']:
         # PyTorch logic
         model_key = "esp_aves2_effnetb0_all" if model_name == 'effnetb0' else "esp_aves2_naturelm_audio_v1_beats"
         encoder = load_model(model_key, device=device, return_features_only=True)
         encoder.to(device)
         return encoder
-        
-    elif model_name == 'perch2':
-        # TensorFlow logic
-        suffix = "perch_v2_cpu" if device == 'cpu' else "perch_v2"
-        perch_url = f"https://www.kaggle.com/models/google/bird-vocalization-classifier/frameworks/TensorFlow2/variations/{suffix}/versions/1"
-        perch_model = hub.load(perch_url)
-        return perch_model.signatures['serving_default'] 
+    else :
+        raise ValueError(f"Unsupported model_name: {model_name}")
+    #elif model_name == 'perch2':
+    #    # TensorFlow logic
+    #    suffix = "perch_v2_cpu" if device == 'cpu' else "perch_v2"
+    #    perch_url = f"https://www.kaggle.com/models/google/bird-vocalization-classifier/frameworks/TensorFlow2/variations/{suffix}/versions/1"
+    #    perch_model = hub.load(perch_url)
+    #    return perch_model.signatures['serving_default'] 
     
 
 def pool_features(features, windows : bool = False,window_pooled : bool = False, method : str ='mean',encoder : str = 'perch2'):

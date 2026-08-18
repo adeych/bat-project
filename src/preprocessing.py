@@ -18,6 +18,7 @@ from torch.utils.data import Dataset, DataLoader
 import torchaudio
 import torchaudio.functional as AF
 import torchaudio.transforms as AT
+from fractions import Fraction
 
 # ==========================================
 # 1. Base Preprocessing Pipeline
@@ -203,36 +204,31 @@ class FrequencyMasking(nn.Module):
         return torch.from_numpy(audio_np).float().to(audio.device)
 
 class TimeStretch(nn.Module):
-    """
-    Time stretches by resampling, then uses torchaudio PitchShift 
-    to restore original frequencies.
-    """
-    def __init__(self, min_rate: float = 0.8, max_rate: float = 1.2):
+    def __init__(self, min_rate=0.8, max_rate=1.2, target_sr=32000, n_buckets=9):
         super().__init__()
-        self.min_rate = min_rate
-        self.max_rate = max_rate
+        self.min_rate, self.max_rate = min_rate, max_rate
+        rates = np.linspace(min_rate, max_rate, n_buckets)
+        self._modules_by_rate = {}
+        for r in rates:
+            frac = Fraction(float(r)).limit_denominator(200)
+            n_steps = -12.0 * math.log2(r)
+            self._modules_by_rate[round(r, 3)] = (
+                AT.Resample(orig_freq=frac.denominator, new_freq=frac.numerator),
+                AT.PitchShift(sample_rate=target_sr, n_steps=n_steps),
+            )
+        self._rate_choices = list(self._modules_by_rate.keys())
 
-    def forward(self, audio: torch.Tensor, target_sr: int) -> torch.Tensor:
-        rate = random.uniform(self.min_rate, self.max_rate)
-        if abs(rate - 1.0) < 1e-3:
-            return audio
-
-        orig_len = audio.shape[-1]
-        virtual_sr = int(target_sr * rate)
-
-        # 1. Resample (stretches time, but shifts pitch)
-        stretched = AF.resample(audio, orig_freq=target_sr, new_freq=virtual_sr)
-
-        # 2. Shift pitch back by -12 * log2(rate) semitones to restore true pitch
-        n_steps = -12.0 * math.log2(rate)
-        pitch_restored = AT.PitchShift(sample_rate=target_sr, n_steps=n_steps)(stretched)
-
-        # 3. Trim or pad back to original window length
-        if pitch_restored.shape[-1] < orig_len:
-            pad = orig_len - pitch_restored.shape[-1]
-            return torch.nn.functional.pad(pitch_restored, (0, pad))
-        else:
-            return pitch_restored[..., :orig_len]
+    def forward(self, audio, target_sr=None):
+        with torch.no_grad():
+            rate = random.choice(self._rate_choices)
+            if abs(rate - 1.0) < 1e-3:
+                return audio
+            resample_mod, pitch_mod = self._modules_by_rate[rate]
+            orig_len = audio.shape[-1]
+            out = pitch_mod(resample_mod(audio))
+            if out.shape[-1] < orig_len:
+                return F.pad(out, (0, orig_len - out.shape[-1]))
+            return out[..., :orig_len]
 
 
 class AudioCompose(nn.Module):
