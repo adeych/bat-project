@@ -1,0 +1,29 @@
+name: temp-env-4
+channels:
+  #- pytorch
+  #- nvidia
+  - conda-forge
+dependencies:
+  - python=3.12
+  #- pytorch::pytorch=2.5.1
+  #- pytorch::torchvision=0.20.1
+  #- pytorch::torchaudio=2.5.1
+  #- pytorch::pytorch-cuda=12.1
+  #- pytorch-cuda=12.1
+  #- nvidia::cuda=12.1
+  - pip
+  - pip:
+    - avex
+    - onnxruntime-gpu
+    - huggingface-hub
+    - librosa
+    - matplotlib
+    - soundfile
+    - resampy
+    - scikit-learn
+    - pandas
+    - numpy
+    - scipy
+
+
+#update with : conda env update -n my_project_env --file my_project_env.yml --prune

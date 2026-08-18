@@ -5,3 +5,7 @@ data
 __pycache__/
 *.pyc
 *$py.class
+
+#slurm outputs
+*.out
+*.err

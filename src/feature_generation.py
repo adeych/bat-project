@@ -98,7 +98,7 @@ def extract_encoder(model_name, device='cpu'):
     Loads the specified encoder model and returns it ready for feature extraction.
     model_name should be one of 'effnetb0', 'NLM_BEATs', or 'perch2'.
     """
-    if model_name in ['effnetb0', 'NLM_BEATs', 'perch2']:
+    if model_name in ['effnetb0', 'NLM_BEATs']:
         # PyTorch logic
         model_key = "esp_aves2_effnetb0_all" if model_name == 'effnetb0' else "esp_aves2_naturelm_audio_v1_beats"
         encoder = load_model(model_key, device=device, return_features_only=True)
