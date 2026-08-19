@@ -7,8 +7,8 @@ from avex import load_model
 
 import onnxruntime as ort
 from huggingface_hub import hf_hub_download
-import tensorflow as tf
-import tensorflow_hub as hub
+#import tensorflow as tf
+#import tensorflow_hub as hub
 
 
 def extract_feature(window, encoder, model_name, device='cpu'):

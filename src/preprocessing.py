@@ -281,7 +281,7 @@ class AudioCompose(nn.Module):
 
 
 
-def get_ir_per_label(self, y : np.ndarray) -> np.ndarray:
+def get_ir_per_label(y : np.ndarray) -> np.ndarray:
     """Calculates the Imbalance Ratio per Label (IRLBL)."""
     counts = np.sum(y, axis=0)
     max_count = np.max(counts)
@@ -289,7 +289,7 @@ def get_ir_per_label(self, y : np.ndarray) -> np.ndarray:
     ir_per_label = max_count / (counts + 1e-9)
     return ir_per_label
 
-def iterative_oversample(self, X, y, target_percentage=0.2,random_state = 42):
+def iterative_oversample(X, y, target_percentage=0.2,random_state = 42):
     """
     Randomly duplicates samples containing minority labels 
     until the distribution balances out.
