@@ -1,11 +1,13 @@
 import argparse
 import os
 import sys
-import onnxruntime-gpu as ort
+import onnxruntime as ort #verify difference between onnxruntime and onnxruntime-gpu
 from huggingface_hub import hf_hub_download
 from src.feature_generation import extract_feature, extract_encoder
-from src.data_loader import BioacousticDataset
+from src.preprocessing import BioacousticDataset
 import time
+import numpy as np
+from pathlib import Path
 
 def perch_extraction(batdata, device='cpu',num_audio = 30):
     """
@@ -84,12 +86,12 @@ def eff_extraction(batdata, device='cpu', num_audio=30):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data_dir", type=str, required=True,default="/idiap/temp/adeych/data",
+    parser.add_argument("--data_dir", type=str, required=False, default="/idiap/temp/adeych/data",
                          help="Path to the temp/scratch directory containing your data")
     parser.add_argument("--num_audio", type=int, default=30,
                          help="Number of audio files to process for feature extraction")
-    parser.add_argument("--device", type=str, default='cpu',
-                         help="Device to use for feature extraction (e.g., 'cpu' or 'cuda')")
+    parser.add_argument("--device", type=str, default='all', choices=['cpu', 'cuda', 'all'],
+                         help="Device to use for feature extraction (e.g., 'cpu' or 'cuda' or 'all')")
     parser.add_argument("--encoder", type=str, choices=['perch2', 'NLM_BEATs', 'effnetb0','all'], default='all',
                          help="Encoder model to use for feature extraction")
     args = parser.parse_args()
@@ -97,18 +99,19 @@ if __name__ == "__main__":
     print("\n" + "=" * 50)
     print("ENCODER EXTRACTION TEST")
     print("=" * 50)
+    dir = Path(args.data_dir)
 
     if args.encoder == 'perch2' or args.encoder == 'all':
         batdata = BioacousticDataset(data_input=str(dir / "bat_metadata.csv"),
                              root_dir=str(dir / "xenocanto-dataset"),
                              encoder = "perch2")
-        if args.device == 'cuda':
+        if args.device == 'cuda' or args.device == 'all':
             print("\n--- Extracting features using Perch 2.0 on GPU ---")
             t0 = time.perf_counter()
             perch_extraction(batdata, device='cuda', num_audio=args.num_audio)
             t1 = time.perf_counter()
             print(f"Perch 2.0 feature extraction on GPU took {t1 - t0:.2f} seconds")
-        elif args.device == 'cpu':
+        if args.device == 'cpu' or args.device == 'all':
             print("\n--- Extracting features using Perch 2.0 on CPU ---")
             t0 = time.perf_counter()
             perch_extraction(batdata, device='cpu', num_audio=args.num_audio)
@@ -119,13 +122,13 @@ if __name__ == "__main__":
         batdata = BioacousticDataset(data_input=str(dir / "bat_metadata.csv"),
                              root_dir=str(dir / "xenocanto-dataset"),
                              encoder = "NLM_BEATs")
-        if args.device == 'cuda':
+        if args.device == 'cuda' or args.device == 'all':
             print("\n--- Extracting features using NLM_BEATs on GPU ---")
             t0 = time.perf_counter()
             nlm_extraction(batdata, device='cuda', num_audio=args.num_audio)
             t1 = time.perf_counter()
             print(f"NLM_BEATs feature extraction on GPU took {t1 - t0:.2f} seconds")
-        elif args.device == 'cpu':
+        if args.device == 'cpu' or args.device == 'all':
             print("\n--- Extracting features using NLM_BEATs on CPU ---")
             t0 = time.perf_counter()
             nlm_extraction(batdata, device='cpu', num_audio=args.num_audio)
@@ -136,13 +139,13 @@ if __name__ == "__main__":
         batdata = BioacousticDataset(data_input=str(dir / "bat_metadata.csv"),
                              root_dir=str(dir / "xenocanto-dataset"),
                              encoder = "effnetb0")
-        if args.device == 'cuda':
+        if args.device == 'cuda' or args.device == 'all':
             print("\n--- Extracting features using effnetb0 on GPU ---")
             t0 = time.perf_counter()
             eff_extraction(batdata, device='cuda', num_audio=args.num_audio)
             t1 = time.perf_counter()
             print(f"effnetb0 feature extraction on GPU took {t1 - t0:.2f} seconds")
-        elif args.device == 'cpu':
+        if args.device == 'cpu' or args.device == 'all':
             print("\n--- Extracting features using effnetb0 on CPU ---")
             t0 = time.perf_counter()
             eff_extraction(batdata, device='cpu', num_audio=args.num_audio)

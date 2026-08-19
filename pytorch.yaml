@@ -14,7 +14,7 @@ dependencies:
   - pip
   - pip:
     - avex
-    - onnxruntime-gpu
+    - onnxruntime-gpu #note problem with onnxruntime-gpu and onnxruntime, need to use only one of them
     - huggingface-hub
     - librosa
     - matplotlib
@@ -27,3 +27,6 @@ dependencies:
 
 
 #update with : conda env update -n my_project_env --file my_project_env.yml --prune
+# use :
+#eval "$(/idiap/temp/adeych/miniforge3/bin/conda shell.bash hook)"
+#conda activate temp-env-4

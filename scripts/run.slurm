@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --time 00:02:00
+#SBATCH --time 00:10:00
 #SBATCH --nodes 1
 #SBATCH --ntasks 1
 #SBATCH --cpus-per-task 8
@@ -14,7 +14,6 @@
 
 source /idiap/temp/adeych/miniforge3/bin/activate temp-env-4
 
-
 cd /idiap/home/adeych/bat-project/tests
 
-python3 cluster_test.py --data_dir /idiap/temp/adeych/data
+python3 encoder_extraction.py --encoder perch2 --num_audio 20

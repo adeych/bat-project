@@ -5,6 +5,7 @@ import os
 import math
 import random
 from typing import List, Tuple, Union, Optional, Callable
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -403,7 +404,7 @@ class BioacousticDataset(Dataset):
         return len(self.X)
 
     def __getitem__(self, idx):
-        file_path = os.path.join(self.root_dir, self.X[idx])
+        file_path = Path(self.root_dir) / Path(self.X[idx].replace("\\", "/"))
         labels = torch.tensor(self.y[idx], dtype=torch.float32)
         
         

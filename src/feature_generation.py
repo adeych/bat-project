@@ -1,3 +1,5 @@
+import gc
+
 import numpy as np
 import torch
 from tqdm import tqdm
@@ -5,8 +7,8 @@ from avex import load_model
 
 import onnxruntime as ort
 from huggingface_hub import hf_hub_download
-#import tensorflow as tf
-#import tensorflow_hub as hub
+import tensorflow as tf
+import tensorflow_hub as hub
 
 
 def extract_feature(window, encoder, model_name, device='cpu'):
@@ -69,8 +71,12 @@ def build_perch_fb(batdata,device='cpu') :
         repo_id="justinchuby/Perch-onnx",
         filename="perch_v2.onnx"
     )
+    opts = ort.SessionOptions()
+    opts.intra_op_num_threads = 8  # Set explicit thread count matching assigned CPU cores
+    opts.inter_op_num_threads = 8  # Set explicit thread count
+
     session = ort.InferenceSession(
-    model_path, 
+    model_path, sess_options=opts,
     providers=["CPUExecutionProvider"] if device=='cpu' else ["CUDAExecutionProvider", "CPUExecutionProvider"] 
     )
 
@@ -90,7 +96,6 @@ def build_perch_fb(batdata,device='cpu') :
             label_list.append(labels.numpy())
 
     return feature_list, np.array(label_list)
-        
 
 
 def extract_encoder(model_name, device='cpu'):
@@ -104,14 +109,14 @@ def extract_encoder(model_name, device='cpu'):
         encoder = load_model(model_key, device=device, return_features_only=True)
         encoder.to(device)
         return encoder
+    elif model_name == 'perch2':
+    #    # TensorFlow logic
+        suffix = "perch_v2_cpu" if device == 'cpu' else "perch_v2"
+        perch_url = f"https://www.kaggle.com/models/google/bird-vocalization-classifier/frameworks/TensorFlow2/variations/{suffix}/versions/1"
+        perch_model = hub.load(perch_url)
+        return perch_model.signatures['serving_default'] 
     else :
         raise ValueError(f"Unsupported model_name: {model_name}")
-    #elif model_name == 'perch2':
-    #    # TensorFlow logic
-    #    suffix = "perch_v2_cpu" if device == 'cpu' else "perch_v2"
-    #    perch_url = f"https://www.kaggle.com/models/google/bird-vocalization-classifier/frameworks/TensorFlow2/variations/{suffix}/versions/1"
-    #    perch_model = hub.load(perch_url)
-    #    return perch_model.signatures['serving_default'] 
     
 
 def pool_features(features, windows : bool = False,window_pooled : bool = False, method : str ='mean',encoder : str = 'perch2'):
