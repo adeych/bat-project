@@ -1222,3 +1222,53 @@ def evaluate_abmil_ood(fitted_wrapper, X_bags_ood):
 #       X_bags_train, y_train, X_bags_val, y_val, n_labels=y.shape[1],
 #       use_lstm=True, lstm_residual=True, pooling='attention',
 #   )
+from pathlib import Path
+import pickle
+from src.feature_generation import pool_features
+
+def mil_experiment(encoder_name : str,ensemble = False) :
+    
+    dir = Path("/idiap/temp/adeych/data")
+
+    if encoder_name == "perch2":
+       X_bags_dir = "perch2-bags.pkl"
+    elif encoder_name == "effnetb0":
+        X_bags_dir = "effnetb0-bags.pkl"
+    elif encoder_name == "NLM_BEATs":
+        X_bags_dir = "NLM-bags.pkl"
+    else:
+        raise ValueError(f"Unsupported encoder : {encoder_name}. Please choose from 'perch2', 'effnetb0', or 'NLM_BEATs'.")
+
+    label_cols = ['type_a', 'type_b', 'type_c', 'type_d', 'echo']
+
+    with open(dir / "feature_banks" / X_bags_dir, "rb") as f:
+        X_bags = pickle.load(f)
+
+    X_bags_pooled = pool_features(X_bags, windows=False,window_pooled=False,encoder = encoder_name)
+
+    y = np.load(dir / "feature_banks" / "labels.npy")
+
+    results_ABMIL = abmil_classifier_quick(
+           X_bags_pooled, y, num_trials=5,
+           variants=('ABMIL',),
+           ensemble = ensemble,
+       )
+    results_ABMIL_LTSM_residual = abmil_classifier_quick(
+           X_bags_pooled, y, num_trials=5,
+           variants=('ABMIL_LSTM_residual',),
+           ensemble = ensemble,
+       )
+
+    results_LTSM_only_residual = abmil_classifier_quick(
+           X_bags_pooled, y, num_trials=5,
+           variants=('LSTM_only_residual',),
+           ensemble = ensemble,
+       )
+
+    results_LTSM_last =abmil_classifier_quick(
+           X_bags_pooled, y, num_trials=5,
+           variants=('LSTM_last',),
+           ensemble = ensemble,
+       )
+
+    return results_ABMIL,results_ABMIL_LTSM_residual,results_LTSM_only_residual,results_LTSM_last
