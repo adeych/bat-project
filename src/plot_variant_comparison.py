@@ -30,7 +30,7 @@ VARIANT_DISPLAY_LABELS = {
     'ABMIL': 'ABMIL',
     'ABMIL_LSTM_residual': 'ABMIL +\nLSTM (resid.)',
     'LSTM_only_residual': 'LSTM only\n(resid.)',
-    'LSTM_last': 'LSTM\n(last state)',
+    'LSTM_last': 'Linear\n probe',
 }
 
 

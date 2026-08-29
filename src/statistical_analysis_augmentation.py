@@ -506,6 +506,82 @@ def compare_encoders_overall_variants(results_abmil, results_abmil_lstm_residual
 #    (Friedman + Nemenyi -- 4 matched conditions, so this IS the right test)
 # ============================================================================
 
+def compare_variants_per_encoder1(results_abmil, results_abmil_lstm,
+                                  results_lstm_only,
+                                  label_names=None, alpha=0.05, plot=True):
+    """
+    For each encoder separately, runs a Friedman test across the three MIL
+    variants (ABMIL, ABMIL_LSTM, LSTM_only) on matched (trial, fold, class)
+    blocks, followed by Nemenyi post-hoc pairwise comparisons if significant.
+
+    Parameters
+    ----------
+    results_abmil, results_abmil_lstm, results_lstm_only : dict {encoder_name: results_list}
+    label_names : list of str, optional
+    alpha : float
+    plot : bool
+        If True (default), renders a Nemenyi heatmap for each encoder where
+        the Friedman test comes back significant.
+
+    Returns
+    -------
+    dict {encoder_name: df_stat}
+        Per-encoder matched-block DataFrames (index = block, columns =
+        variants), in case you want to inspect or re-analyze any of them.
+    """
+    if label_names is None:
+        label_names = ['Type A', 'Type B', 'Type C', 'Type D', 'Echo']
+
+    variant_results = {
+        'ABMIL': results_abmil,
+        'ABMIL_LSTM': results_abmil_lstm,
+        'LSTM_only': results_lstm_only,
+    }
+    variant_order = ['ABMIL', 'ABMIL_LSTM', 'LSTM_only']
+
+    encoder_key_sets = [set(d.keys()) for d in variant_results.values()]
+    encoders = sorted(set.intersection(*encoder_key_sets))
+    all_seen = set.union(*encoder_key_sets)
+    missing = all_seen - set(encoders)
+    if missing:
+        print(f"Warning: encoder(s) {missing} not present in all three variant inputs -- skipping them.\n")
+
+    per_encoder_results = {}
+
+    for encoder_name in encoders:
+        print(f"\n=== Encoder: {encoder_name} -- which MIL variant works best? (Friedman + Nemenyi) ===")
+
+        structured_data = {}
+        for variant_name in variant_order:
+            trials_list = variant_results[variant_name][encoder_name]
+            active_trial_idx = 0
+            for trial in trials_list:
+                y_true_folds = trial['y_true_cv']
+                y_pred_proba_folds = trial['y_pred_proba_cv']
+
+                for fold_idx in range(len(y_true_folds)):
+                    y_true = y_true_folds[fold_idx]
+                    y_pred_proba = y_pred_proba_folds[fold_idx]
+
+                    for c_idx, class_name in enumerate(label_names):
+                        ap_score = average_precision_score(y_true[:, c_idx], y_pred_proba[:, c_idx])
+                        block_id = (active_trial_idx, fold_idx, class_name)
+                        structured_data.setdefault(block_id, {})[variant_name] = ap_score
+
+                active_trial_idx += 1
+
+        df_stat = pd.DataFrame.from_dict(structured_data, orient='index').dropna()
+        per_encoder_results[encoder_name] = df_stat
+
+        if df_stat.empty or len(df_stat.columns) < 2:
+            print(f"Not enough matched blocks/variants to test for {encoder_name}, skipping.")
+            continue
+
+        _friedman_nemenyi_analysis(df_stat, alpha=alpha, plot=plot, item_label="variants",
+                                    group_label=encoder_name)
+
+    return per_encoder_results
+
 def compare_variants_per_encoder(results_abmil, results_abmil_lstm_residual,
                                   results_lstm_residual, results_lstm_last,
                                   label_names=None, alpha=0.05, plot=True):
