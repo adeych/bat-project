@@ -2,7 +2,7 @@ from pathlib import Path
 import pickle
 from src.feature_generation import pool_features
 import numpy as np
-from src.mil_multilabel_new_new import abmil_classifier_tuned_optuna
+from src.mil_multilabel import abmil_classifier_tuned_optuna
 from src.linear_probe import linear_probe_tuned_optuna
 import argparse
 

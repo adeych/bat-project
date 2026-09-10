@@ -10,7 +10,7 @@ from src.preprocessing import BioacousticDataset
 import time
 import numpy as np
 from pathlib import Path
-from src.augmented_mlp_training_new import load_encoder,run_cv_trials
+from src.augmented_mlp_training import load_encoder,run_cv_trials
 from src.feature_generation import pool_features
 from src.preprocessing import PipistrellePreprocessingPipeline,AudioCompose,TimeMasking,FrequencyMasking,TimeStretch,WaveformMixup
 import pandas as pd

@@ -111,8 +111,8 @@ def _suggest_ensemble_linear_probe_params(trial):
     hidden layer to regularize besides the input itself)."""
     return dict( 
         dropout=0.0,
-        #learning_rate=trial.suggest_categorical("learning_rate",[1e-5,5e-5,1e-4,5e-4,1e-3]),
-        learning_rate=trial.suggest_categorical("learning_rate",[1e-4]),
+        learning_rate=trial.suggest_categorical("learning_rate",[1e-5,5e-5,1e-4,5e-4,1e-3]),
+        #learning_rate=trial.suggest_categorical("learning_rate",[1e-4]),
         weight_decay=trial.suggest_categorical("weight_decay",[1e-5]),
         batch_size=trial.suggest_categorical("batch_size", [4]),
     ) 
@@ -1009,6 +1009,27 @@ class ABMILSklearnWrapper(BaseEstimator, ClassifierMixin):
 #                                   ABMIL_LSTM_residual_proj). lstm_hidden_dim is freely tunable.
 #   'LSTM_no_proj_residual_proj'      -- same idea, mean-pooled (no attention) counterpart of
 #                                   ABMIL_LSTM_no_proj_residual_proj.
+#   'Mean_only'                 -- use_lstm=False, pooling='mean', use_feature_fc=True (the
+#                                   default): mean pooling with NEITHER attention NOR temporal
+#                                   context, but WITH the same feature_fc projection every other
+#                                   variant above (except the *_no_proj ones) shares. This is the
+#                                   fourth cell of the (attention/mean) x (LSTM/no-LSTM) factorial
+#                                   that 'ABMIL' (attention, no LSTM), 'ABMIL_LSTM' (attention,
+#                                   LSTM), and 'LSTM_only' (mean, LSTM) leave incomplete on their
+#                                   own -- with it, ABMIL vs Mean_only isolates the effect of
+#                                   attention alone (holding LSTM absent and the projection layer
+#                                   fixed), and LSTM_only vs Mean_only isolates the effect of the
+#                                   LSTM alone (holding pooling at 'mean' and the projection layer
+#                                   fixed), enabling a genuine interaction test across all four
+#                                   cells rather than only the three pairwise comparisons the
+#                                   original three variants supported. NOT the same model as the
+#                                   standalone LinearProbe baseline: LinearProbe mean-pools RAW
+#                                   embeddings before a single linear layer (equivalent to
+#                                   'Mean_only' with use_feature_fc=False, i.e. what would be
+#                                   'Mean_no_proj' if that were added), whereas 'Mean_only' here
+#                                   pools the PROJECTED (Linear -> ReLU -> Dropout) per-instance
+#                                   representations -- a genuine nonlinear transform sits between
+#                                   the raw embedding and the mean, unlike LinearProbe.
 VARIANT_WRAPPER_KWARGS = {
     'ABMIL':                    dict(use_lstm=False, pooling='attention'),
     'ABMIL_LSTM':                dict(use_lstm=True,  pooling='attention', lstm_residual=False,
@@ -1045,6 +1066,7 @@ VARIANT_WRAPPER_KWARGS = {
     'LSTM_no_proj_residual_proj':       dict(use_lstm=True, pooling='mean', lstm_residual=False,
                                               lstm_residual_proj=True, use_feature_fc=False,
                                               lstm_bidirectional=True, lstm_num_layers=1),
+    'Mean_only':                 dict(use_lstm=False, pooling='mean'),
 }
 
 # Base hyperparameter search space, shared by all variants.
@@ -1175,6 +1197,8 @@ def _suggest_variant_params_old(trial, variant):
                      lstm_num_layers=1,
                      lstm_bidirectional=True,
                      lstm_hidden_dim=trial.suggest_categorical("lstm_hidden_dim", [16, 32, 64, 128]))
+    elif variant == "Mean_only":
+        extra = dict(use_lstm=False, pooling="mean")
     else:
         raise ValueError(variant)
 
@@ -1260,6 +1284,15 @@ def _suggest_variant_params(trial, variant):
                      lstm_num_layers=1,
                      lstm_bidirectional=True,
                      lstm_hidden_dim=trial.suggest_categorical("lstm_hidden_dim", [64, 128, 256]))
+    elif variant == "Mean_only":
+        # No attention, no LSTM -- but WITH the shared feature_fc projection
+        # (unlike the *_no_proj variants). The 4th cell of the (attention/
+        # mean) x (LSTM/no-LSTM) factorial; see the comment above
+        # VARIANT_WRAPPER_KWARGS for what this completes. hidden_dim is
+        # already sampled for this variant by the block above (it's not in
+        # the no-proj exclusion list), so nothing extra needed here beyond
+        # the pooling/use_lstm choice itself.
+        extra = dict(use_lstm=False, pooling="mean")
     else:
         raise ValueError(variant)
 
@@ -1433,9 +1466,9 @@ def abmil_classifier_tuned_optuna(X_bags, y, n_split_out=5, n_split_in=5, num_tr
                     ensemble_n_optuna_trials=ensemble_n_optuna_trials,
                     ensemble_n_split_in=ensemble_n_split_in,
                     ensemble_n_epochs_max=ensemble_n_epochs_max,
-                    hidden_dim=best_params.get("hidden_dim", 256), dropout=best_params["dropout"],
+                    hidden_dim=best_params.get("hidden_dim", 128), dropout=best_params["dropout"],
                     learning_rate=best_params["learning_rate"], weight_decay=best_params["weight_decay"],
-                    attention_dim=best_params.get("attention_dim", 128),
+                    attention_dim=best_params.get("attention_dim", 64),
                     use_lstm=extra["use_lstm"], pooling=extra["pooling"],
                     lstm_residual=extra.get("lstm_residual", False),
                     lstm_residual_proj=extra.get("lstm_residual_proj", False),
