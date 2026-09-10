@@ -290,7 +290,7 @@ def _suggest_linear_probe_params(trial):
     """
     return dict(
         dropout = 0.0,
-        learning_rate=trial.suggest_categorical("learning_rate",[1e-5,5e-5,1e-4,5e-4,1e-3]),
+        learning_rate=trial.suggest_categorical("learning_rate",[5e-5,1e-4,5e-4]),
         weight_decay=trial.suggest_categorical("weight_decay",[1e-5]),
         batch_size=trial.suggest_categorical("batch_size", [4]),
     )

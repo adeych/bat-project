@@ -71,20 +71,25 @@ def build_perch_fb(batdata,device='cpu') :
         repo_id="justinchuby/Perch-onnx",
         filename="perch_v2.onnx"
     )
+    cuda_options = {
+        'device_id': 0,
+        'gpu_mem_limit': 12 * 1024 * 1024 * 1024,  # Cap at 12 GB VRAM
+        'arena_extend_strategy': 'kSameAsRequested',  # Allocates memory strictly on demand
+    }
     opts = ort.SessionOptions()
     opts.intra_op_num_threads = 8  # Set explicit thread count matching assigned CPU cores
     opts.inter_op_num_threads = 8  # Set explicit thread count
 
     session = ort.InferenceSession(
     model_path, sess_options=opts,
-    providers=["CPUExecutionProvider"] if device=='cpu' else ["CUDAExecutionProvider", "CPUExecutionProvider"] 
+    providers=["CPUExecutionProvider"] if device=='cpu' else [('CUDAExecutionProvider', cuda_options), "CPUExecutionProvider"] 
     )
 
     for i in tqdm(range(len(batdata)), desc=f"Extracting perch 2.0"):
             windows, labels = batdata[i]
             windows = windows.numpy().astype(np.float32)
             
-            batch_size = len(windows)
+            batch_size = 60
             feats = []
             for j in range(0,len(windows), batch_size) :
                 batch = windows[j:j+batch_size]

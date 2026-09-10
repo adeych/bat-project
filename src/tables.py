@@ -4,7 +4,7 @@ Functions to process raw cross-validation outputs into latex summary tables
 
 import numpy as np
 from sklearn.metrics import average_precision_score
-from evaluation.metrics import calculate_ece
+from src.metrics import calculate_ece
 import pandas as pd
 from sklearn.metrics import brier_score_loss, log_loss
 from sklearn.metrics import roc_auc_score

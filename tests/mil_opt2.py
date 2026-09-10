@@ -2,7 +2,7 @@ from pathlib import Path
 import pickle
 from src.feature_generation import pool_features
 import numpy as np
-from src.mil_multilabel import abmil_classifier_tuned_optuna
+from src.mil_multilabel_new_new import abmil_classifier_tuned_optuna
 from src.linear_probe import linear_probe_tuned_optuna
 import argparse
 
@@ -42,11 +42,13 @@ def linear_probe_optimisation() :
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--algorithm", type=str, required=True,
-                         help="Algorithm : ABMIL, ABMIL_LSTM, LSTM, LSTM_proj,ABMIL_LSTM_proj, Linear")
+                         help="Algorithm : ABMIL, ABMIL_LSTM, LSTM, LSTM_proj,ABMIL_LSTM_proj, Linear,Mean")
     parser.add_argument("--ensembling", action=argparse.BooleanOptionalAction, required=True,
                      help="True : have dedicated MLP for Type A")
     parser.add_argument("--name", type=str, required=True,
                             help="Name for result file")
+    parser.add_argument("--proj", action=argparse.BooleanOptionalAction, required=True,
+                         help="True : have a projection layer")
     args = parser.parse_args()
 
     print("=" * 50)
@@ -54,15 +56,17 @@ if __name__ == "__main__":
     print("=" * 50)
 
     if args.algorithm == "ABMIL" :
-        variants = ('ABMIL',)
+        variants = ('ABMIL',) if args.proj else ('ABMIL_no_proj',)
     elif args.algorithm == "ABMIL_LSTM" :
-        variants = ('ABMIL_LSTM',)
+        variants = ('ABMIL_LSTM',) if args.proj else ('LSTM_no_proj',)
     elif args.algorithm == "LSTM" :
-        variants = ('LSTM_only',)
+        variants = ('LSTM_only',) if args.proj else ('ABMIL_LSTM_no_proj',) 
     elif args.algorithm == "LSTM_proj" :
-        variants = ('LSTM_residual_proj',)
+        variants = ('LSTM_residual_proj',) if args.proj else ('LSTM_no_proj_residual_proj',) 
     elif args.algorithm == "ABMIL_LSTM_proj" :
-        variants = ('ABMIL_LSTM_residual_proj',)    
+        variants = ('ABMIL_LSTM_residual_proj',) if args.proj else ('ABMIL_LSTM_no_proj_residual_proj',) 
+    elif args.algorithm == "Mean" :
+        variants = ('Mean_only',)
 
     print(args.algorithm)
     print(args.ensembling)
@@ -74,7 +78,7 @@ if __name__ == "__main__":
     else : 
         results = mil_optimisation(variants,args.ensembling)
 
-    save_path = f"/idiap/home/adeych/bat-project/results/mil_{args.algorithm}_results_{en_state}_{args.name}.pkl"
+    save_path = f"/idiap/temp/adeych/results/fc_experiment/mil_{args.algorithm}_results_{en_state}_{args.name}.pkl"
     
     with open(save_path, "wb") as f:
         pickle.dump(results, f)

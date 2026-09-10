@@ -1,0 +1,28 @@
+\begin{table}[htbp]
+\centering
+\caption{Comparative performance evaluation across audio embedding encoders and downstream classifiers against a chance-level baseline. Metrics report the mean ($\pm$ standard error of the mean) computed over 25 validation folds, with top values highlighted in bold.}
+\label{tab:encoder_results}
+\footnotesize
+\def\arraystretch{1.2}
+\setlength{\tabcolsep}{5pt}
+\begin{tabular}{llcccccc}
+\toprule
+\textbf{Encoder} & \textbf{Classifier} & \textbf{Type A AP} & \textbf{Type B AP} & \textbf{Type C AP} & \textbf{Type D AP} & \textbf{Echo AP} & \textbf{cmAP} \\
+\midrule
+\multirow{4}{*}{\textbf{ESP-EffNetB0}} & SVM & 0.558 $\pm$ 0.041 & 0.901 $\pm$ 0.013 & 0.894 $\pm$ 0.008 & 0.956 $\pm$ 0.013 & 0.983 $\pm$ 0.004 & 0.858 $\pm$ 0.010 \\
+ & Logistic Regression & 0.708 $\pm$ 0.034 & 0.877 $\pm$ 0.013 & 0.881 $\pm$ 0.010 & 0.936 $\pm$ 0.012 & 0.978 $\pm$ 0.005 & 0.876 $\pm$ 0.008 \\
+ & MLP & 0.593 $\pm$ 0.042 & 0.903 $\pm$ 0.012 & 0.901 $\pm$ 0.009 & 0.944 $\pm$ 0.012 & 0.981 $\pm$ 0.003 & 0.865 $\pm$ 0.009 \\
+ & Random Forest & 0.556 $\pm$ 0.040 & 0.829 $\pm$ 0.013 & 0.904 $\pm$ 0.009 & 0.871 $\pm$ 0.021 & 0.987 $\pm$ 0.003 & 0.829 $\pm$ 0.008 \\
+\midrule
+\multirow{4}{*}{\textbf{NatureLM-BEATs}} & SVM & 0.659 $\pm$ 0.046 & 0.897 $\pm$ 0.011 & 0.907 $\pm$ 0.009 & 0.911 $\pm$ 0.015 & 0.985 $\pm$ 0.004 & 0.872 $\pm$ 0.010 \\
+ & Logistic Regression & \textbf{0.747 $\pm$ 0.043} & 0.894 $\pm$ 0.010 & 0.901 $\pm$ 0.008 & 0.928 $\pm$ 0.010 & 0.979 $\pm$ 0.005 & 0.890 $\pm$ 0.008 \\
+ & MLP & 0.689 $\pm$ 0.044 & 0.907 $\pm$ 0.010 & 0.906 $\pm$ 0.008 & 0.874 $\pm$ 0.018 & 0.988 $\pm$ 0.003 & 0.873 $\pm$ 0.010 \\
+ & Random Forest & 0.660 $\pm$ 0.041 & 0.830 $\pm$ 0.013 & 0.892 $\pm$ 0.010 & 0.834 $\pm$ 0.021 & \textbf{0.991 $\pm$ 0.002} & 0.841 $\pm$ 0.009 \\
+\midrule
+\multirow{4}{*}{\textbf{Perch 2.0}} & SVM & 0.550 $\pm$ 0.039 & 0.915 $\pm$ 0.011 & 0.914 $\pm$ 0.009 & 0.971 $\pm$ 0.009 & 0.984 $\pm$ 0.003 & 0.867 $\pm$ 0.008 \\
+ & Logistic Regression & 0.707 $\pm$ 0.043 & 0.902 $\pm$ 0.011 & 0.919 $\pm$ 0.007 & \textbf{0.983 $\pm$ 0.004} & 0.979 $\pm$ 0.004 & \textbf{0.898 $\pm$ 0.008} \\
+ & MLP & 0.626 $\pm$ 0.050 & \textbf{0.929 $\pm$ 0.009} & \textbf{0.930 $\pm$ 0.006} & 0.968 $\pm$ 0.009 & 0.984 $\pm$ 0.003 & 0.888 $\pm$ 0.010 \\
+ & Random Forest & 0.584 $\pm$ 0.034 & 0.848 $\pm$ 0.013 & 0.921 $\pm$ 0.010 & 0.920 $\pm$ 0.017 & 0.989 $\pm$ 0.003 & 0.852 $\pm$ 0.007 \\
+\bottomrule
+\end{tabular}
+\end{table}

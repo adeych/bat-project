@@ -113,7 +113,7 @@ class PipistrellePreprocessingPipeline(torch.nn.Module):
         windows = windows.squeeze(0)
         return windows
     
-    def forward(self, file_path : str,timeshift : bool = False) -> torch.Tensor:
+    def forward(self, file_path : str) -> torch.Tensor:
 
         # 0. Load & Time Expand
         audio, orig_sr = self.load(file_path)

@@ -15,27 +15,38 @@ abmil_classifier_tuned / abmil_classifier_quick (same result schema):
         ...
     ]
 
-Two things worth knowing before reading the code below:
+Three things worth knowing before reading the code below:
 
 1. `train_histories` / `val_histories` are the FINAL REFIT's curves (the model
    trained on the full outer-train fold at the winning hyperparameters), not
    the inner-CV search curves. No validation split is passed at that stage, so
    `val_histories` is all NaN by design -- only train_loss is meaningful there.
-   The true validation-AP curves used for hyperparameter/epoch selection live
-   inside each fold's Optuna `study.best_trial.user_attrs["mean_val_ap_curve"]`,
-   which isn't currently threaded out into `all_results` -- if you want that,
-   it'd need a small addition to abmil_classifier_tuned_optuna to append
-   `study.best_trial.user_attrs.get("mean_val_ap_curve")` alongside
-   `all_best_params`.
+   `plot_loss_curves` below plots exactly these (train-only).
 
-2. When ensemble=True, `best_models[fold]` is still the single
+2. The TRUE validation curves used for hyperparameter/epoch selection --
+   mean train-loss, mean val-loss, and mean val-AP averaged across each outer
+   fold's inner-CV splits -- ARE threaded out into `all_results`, but only
+   when it comes from `abmil_classifier_tuned_optuna` (not
+   `abmil_classifier_tuned` / `abmil_classifier_quick`, which don't run that
+   inner Optuna search): `res['inner_cv_train_loss_curves']`,
+   `res['inner_cv_val_loss_curves']`, `res['inner_cv_val_ap_curves']`, each a
+   list with one curve per outer fold, taken from the winning trial's
+   `study.best_trial.user_attrs`. `plot_inner_cv_curves` and
+   `inner_cv_best_epoch_summary` below read these.
+
+3. When ensemble=True, `best_models[fold]` is still the single
    ABMILSklearnWrapper for that fold -- it just has two sub-models: the main
    ABMIL/LSTM model (trained on the complex labels) and `.simple_model_` (a
    LinearProbeSklearnWrapper trained on the simple labels). Both are fully
    fitted sklearn-style estimators, so `.get_params()` on each gives you back
    the actual hyperparameters that were used, and `.simple_model_.history_`
-   gives you the linear probe's own training curve -- no extra bookkeeping was
-   needed on the training side to make any of this available.
+   gives you the linear probe's own FINAL REFIT training curve (train-only,
+   same caveat as point 1). The linear probe's own INNER-CV curves (train
+   loss / val loss / val AP, mean across its inner folds, same caveat as
+   point 2) live on `model.simple_model_inner_cv_history_` -- a dict with
+   keys `'mean_train_loss_curve'`, `'mean_val_loss_curve'`,
+   `'mean_val_ap_curve'` -- populated automatically by `ABMILSklearnWrapper.fit`
+   whenever ensemble=True, no extra bookkeeping needed on the training side.
 """
 
 import matplotlib.pyplot as plt
@@ -165,6 +176,154 @@ def plot_loss_curves(all_results, variant=None, max_folds=5):
             ax.set_ylabel("train loss")
             plt.tight_layout()
             plt.show()
+
+
+def plot_inner_cv_curves(all_results, variant=None, max_folds=5, include_ensemble=True):
+    """
+    Plots the INNER-CV curves actually used for hyperparameter/epoch
+    selection -- distinct from plot_loss_curves, which plots the final
+    refit's train-only loss (no validation split at that stage, see module
+    docstring point 1). For each (trial, variant, outer fold), draws one
+    figure with two panels: mean train-loss vs. mean val-loss (left) and mean
+    val-AP (right), each averaged across that fold's inner-CV splits.
+
+    Only populated for output from abmil_classifier_tuned_optuna -- results
+    from abmil_classifier_tuned / abmil_classifier_quick don't run the inner
+    Optuna search these curves come from, so results without
+    'inner_cv_train_loss_curves' are skipped with a printed note.
+
+    When ensemble=True was used for a given fold, also plots a second figure
+    for that fold with the linear probe's own inner-CV curves (read from
+    model.simple_model_inner_cv_history_ -- see module docstring point 3).
+
+    Parameters
+    ----------
+    all_results : list of dict
+        Output of abmil_classifier_tuned_optuna.
+    variant : str or None
+        Restrict to this variant. None = all variants present.
+    max_folds : int
+        Cap on number of outer folds plotted per (trial, variant).
+    include_ensemble : bool
+        Whether to also plot the ensemble linear probe's inner-CV curves.
+        Skipped automatically for folds/models where ensemble wasn't used or
+        no inner-CV history was recorded.
+    """
+    for res in all_results:
+        if variant is not None and res['model'] != variant:
+            continue
+        if 'inner_cv_train_loss_curves' not in res:
+            print(f"Skipping {res['model']} (trial {res['trial']}): no inner_cv_*_curves "
+                  f"in this result -- only abmil_classifier_tuned_optuna populates these.")
+            continue
+
+        model_name, trial = res['model'], res['trial']
+        train_curves = res['inner_cv_train_loss_curves']
+        val_curves = res['inner_cv_val_loss_curves']
+        ap_curves = res['inner_cv_val_ap_curves']
+        n_folds = min(max_folds, len(train_curves))
+
+        for fold_idx in range(n_folds):
+            fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+
+            axes[0].plot(train_curves[fold_idx], label='train loss')
+            axes[0].plot(val_curves[fold_idx], label='val loss')
+            axes[0].set_title(f"{model_name} (trial {trial}, fold {fold_idx})\nmain model inner-CV loss")
+            axes[0].set_xlabel("epoch")
+            axes[0].set_ylabel("loss")
+            axes[0].legend(fontsize=8)
+
+            axes[1].plot(ap_curves[fold_idx], color='seagreen')
+            axes[1].set_title("main model inner-CV val AP")
+            axes[1].set_xlabel("epoch")
+            axes[1].set_ylabel("val AP (macro)")
+
+            plt.tight_layout()
+            plt.show()
+
+        if include_ensemble:
+            for fold_idx, model in enumerate(res['best_models'][:max_folds]):
+                history = getattr(model, 'simple_model_inner_cv_history_', None)
+                if not history or history.get('mean_train_loss_curve') is None:
+                    continue
+
+                fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+
+                axes[0].plot(history['mean_train_loss_curve'], label='train loss')
+                axes[0].plot(history['mean_val_loss_curve'], label='val loss')
+                axes[0].set_title(f"{model_name} (trial {trial}, fold {fold_idx})\n"
+                                   f"ensemble linear probe inner-CV loss")
+                axes[0].set_xlabel("epoch")
+                axes[0].set_ylabel("loss")
+                axes[0].legend(fontsize=8)
+
+                axes[1].plot(history['mean_val_ap_curve'], color='seagreen')
+                axes[1].set_title("linear probe inner-CV val AP")
+                axes[1].set_xlabel("epoch")
+                axes[1].set_ylabel("val AP (macro)")
+
+                plt.tight_layout()
+                plt.show()
+
+
+def inner_cv_best_epoch_summary(all_results, variant=None):
+    """
+    Tabular counterpart to plot_inner_cv_curves: for each (variant, trial,
+    outer fold), reports the epoch and value of the peak inner-CV val-AP
+    curve for the main model -- i.e. the epoch that was actually selected as
+    "best" during that fold's hyperparameter search, and how good it looked
+    on the held-out inner folds -- plus the same for the ensemble linear
+    probe where available.
+
+    Only populated for output from abmil_classifier_tuned_optuna (see module
+    docstring point 2); results without 'inner_cv_val_ap_curves' contribute
+    no rows.
+
+    Parameters
+    ----------
+    all_results : list of dict
+        Output of abmil_classifier_tuned_optuna.
+    variant : str or None
+        Restrict to this variant. None = all variants present.
+
+    Returns
+    -------
+    pd.DataFrame with columns: variant, trial, fold, best_epoch, best_val_AP,
+    simple_best_epoch, simple_best_val_AP. The last two are NaN for folds
+    where ensemble wasn't used or no linear-probe inner-CV history was found.
+    """
+    rows = []
+    for res in all_results:
+        if variant is not None and res['model'] != variant:
+            continue
+        if 'inner_cv_val_ap_curves' not in res:
+            continue
+
+        model_name, trial = res['model'], res['trial']
+        ap_curves = res['inner_cv_val_ap_curves']
+        best_models = res['best_models']
+
+        for fold_idx, ap_curve in enumerate(ap_curves):
+            ap_curve = np.asarray(ap_curve)
+            best_epoch = int(np.argmax(ap_curve)) + 1
+            best_val_ap = float(ap_curve[best_epoch - 1])
+
+            simple_best_epoch = np.nan
+            simple_best_val_ap = np.nan
+            if fold_idx < len(best_models):
+                history = getattr(best_models[fold_idx], 'simple_model_inner_cv_history_', None)
+                if history and history.get('mean_val_ap_curve') is not None:
+                    simple_ap_curve = np.asarray(history['mean_val_ap_curve'])
+                    simple_best_epoch = int(np.argmax(simple_ap_curve)) + 1
+                    simple_best_val_ap = float(simple_ap_curve[simple_best_epoch - 1])
+
+            rows.append({
+                'variant': model_name, 'trial': trial, 'fold': fold_idx,
+                'best_epoch': best_epoch, 'best_val_AP': best_val_ap,
+                'simple_best_epoch': simple_best_epoch, 'simple_best_val_AP': simple_best_val_ap,
+            })
+
+    return pd.DataFrame(rows)
 
 
 def hyperparam_performance_summary(params_df, metric_col='fold_AP',

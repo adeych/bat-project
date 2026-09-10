@@ -109,12 +109,13 @@ def _suggest_ensemble_linear_probe_params(trial):
     """Same search space as the standalone linear-probe module's
     _suggest_linear_probe_params (dropout fixed at 0.0, since there's no
     hidden layer to regularize besides the input itself)."""
-    return dict(
+    return dict( 
         dropout=0.0,
-        learning_rate=trial.suggest_categorical("learning_rate",[1e-5,5e-5,1e-4,5e-4,1e-3]),
+        #learning_rate=trial.suggest_categorical("learning_rate",[1e-5,5e-5,1e-4,5e-4,1e-3]),
+        learning_rate=trial.suggest_categorical("learning_rate",[1e-4]),
         weight_decay=trial.suggest_categorical("weight_decay",[1e-5]),
         batch_size=trial.suggest_categorical("batch_size", [4]),
-    )
+    ) 
 
 
 def _make_ensemble_linear_probe_objective(X_train, y_train, n_split_in, n_epochs_max, seed):
@@ -272,7 +273,7 @@ class ABMIL(nn.Module):
                  attention_dim=128, label_specific_attention=True,
                  use_lstm=False, lstm_hidden_dim=None, lstm_bidirectional=True,
                  lstm_num_layers=1, lstm_residual=False, lstm_residual_proj=False,
-                 pooling='attention'):
+                 pooling='attention', use_feature_fc=True):
         """
         Parameters
         ----------
@@ -337,6 +338,26 @@ class ABMIL(nn.Module):
                             incompatible with lstm_residual / lstm_residual_proj
                             (there's no sequence of per-instance outputs left to
                             add a skip to -- only the final hidden state survives).
+        use_feature_fc : bool
+            If True (default), instance features are first projected through
+            feature_fc (Linear(n_features, hidden_dim) -> ReLU -> Dropout) --
+            the original ABMIL behavior, and everything downstream (attention,
+            LSTM, classifier) operates on hidden_dim. If False, that projection
+            is skipped entirely: attention / the LSTM / the classifier all
+            operate directly on the raw n_features-dimensional instance
+            embeddings instead (no replacement regularization is added at the
+            input in this mode -- there's simply no feature_fc layer at all).
+            hidden_dim is ignored when use_feature_fc=False. This isolates
+            whether the upfront hidden_dim projection itself is doing any
+            work, independent of whichever pooling/LSTM configuration you're
+            also comparing. When combined with use_lstm=True, lstm_hidden_dim
+            must be sized independently (there's no hidden_dim to auto-derive
+            a default from in the way lstm_hidden_dim=None normally does) --
+            lstm_residual (exact-match) is still technically possible if you
+            happen to pick lstm_hidden_dim * num_directions == n_features, and
+            lstm_residual_proj (a learned shortcut from the raw n_features
+            input, rather than from hidden_dim) is also fully supported here --
+            see the *_no_proj_residual_proj variants below.
         """
         super().__init__()
 
@@ -348,6 +369,7 @@ class ABMIL(nn.Module):
         self.lstm_residual = lstm_residual
         self.lstm_residual_proj = lstm_residual_proj
         self.pooling = pooling
+        self.use_feature_fc = use_feature_fc
 
         if pooling not in ('attention', 'mean', 'last'):
             raise ValueError(f"pooling must be one of 'attention', 'mean', 'last', got {pooling!r}")
@@ -372,35 +394,45 @@ class ABMIL(nn.Module):
                 "tuned lstm_hidden_dim via a learned shortcut projection."
             )
 
-        # Feature processing
-        self.feature_fc = nn.Sequential(
-            nn.Linear(n_features, hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-        )
+        # Feature processing. feature_dim is the dimension everything
+        # downstream (LSTM input / no-LSTM pooling input) actually operates
+        # on: hidden_dim when use_feature_fc=True (original behavior), or the
+        # raw n_features when use_feature_fc=False (feature_fc skipped
+        # entirely -- no replacement regularization at the input).
+        if use_feature_fc:
+            self.feature_fc = nn.Sequential(
+                nn.Linear(n_features, hidden_dim),
+                nn.ReLU(),
+                nn.Dropout(dropout),
+            )
+            feature_dim = hidden_dim
+        else:
+            feature_dim = n_features
 
         # Optional temporal encoder
         if use_lstm:
             num_directions = 2 if lstm_bidirectional else 1
             if lstm_hidden_dim is None:
-                assert hidden_dim % num_directions == 0, (
-                    "hidden_dim must be divisible by 2 when lstm_bidirectional=True "
-                    "and lstm_hidden_dim is not given explicitly"
+                assert feature_dim % num_directions == 0, (
+                    "feature_dim (hidden_dim, or n_features when use_feature_fc=False) "
+                    "must be divisible by 2 when lstm_bidirectional=True and "
+                    "lstm_hidden_dim is not given explicitly"
                 )
-                lstm_hidden_dim = hidden_dim // num_directions
+                lstm_hidden_dim = feature_dim // num_directions
             lstm_output_dim = lstm_hidden_dim * num_directions
 
-            if lstm_residual and lstm_output_dim != hidden_dim:
+            if lstm_residual and lstm_output_dim != feature_dim:
                 raise ValueError(
                     f"lstm_residual=True (exact-match) requires lstm_hidden_dim * "
-                    f"num_directions ({lstm_output_dim}) == hidden_dim ({hidden_dim}). "
+                    f"num_directions ({lstm_output_dim}) == feature_dim ({feature_dim}, "
+                    f"{'hidden_dim' if use_feature_fc else 'n_features, since use_feature_fc=False'}). "
                     f"Leave lstm_hidden_dim=None to get this automatically, or use "
                     f"lstm_residual_proj=True instead to allow an independently-sized "
                     f"lstm_hidden_dim via a learned shortcut projection."
                 )
 
             self.lstm = nn.LSTM(
-                input_size=hidden_dim,
+                input_size=feature_dim,
                 hidden_size=lstm_hidden_dim,
                 num_layers=lstm_num_layers,
                 batch_first=True,
@@ -412,13 +444,16 @@ class ABMIL(nn.Module):
                 # Standard residual-shortcut projection (ResNet-style): a single
                 # learned linear map from the pre-LSTM representation to the
                 # LSTM's output dimension, so H_out = Proj(H) + LSTM(H) even when
-                # lstm_hidden_dim is tuned independently of hidden_dim. Kept as a
-                # plain identity-style shortcut -- no activation, no dropout.
-                self.lstm_shortcut = nn.Linear(hidden_dim, lstm_output_dim)
+                # lstm_hidden_dim is tuned independently of feature_dim. Kept as
+                # a plain identity-style shortcut -- no activation, no dropout.
+                # feature_dim is n_features when use_feature_fc=False, so this
+                # works identically whether or not the upfront feature_fc
+                # projection is present.
+                self.lstm_shortcut = nn.Linear(feature_dim, lstm_output_dim)
 
             post_lstm_dim = lstm_output_dim
         else:
-            post_lstm_dim = hidden_dim
+            post_lstm_dim = feature_dim
 
         self.post_lstm_dim = post_lstm_dim
 
@@ -497,8 +532,9 @@ class ABMIL(nn.Module):
             Attention weights per label (pooling='attention' only); None for
             'mean'/'last' pooling since there is no attention to report.
         """
-        # Feature processing
-        H = self.feature_fc(x_bag)  # (n_instances, hidden_dim)
+        # Feature processing (skipped entirely when use_feature_fc=False --
+        # H is then the raw n_features-dimensional instance embedding)
+        H = self.feature_fc(x_bag) if self.use_feature_fc else x_bag  # (n_instances, feature_dim)
 
         # Optional temporal context
         H, h_n = self._apply_temporal_encoder(H)  # (n_instances, post_lstm_dim)
@@ -578,6 +614,7 @@ def train_abmil(
     lstm_residual=False,
     lstm_residual_proj=False,
     pooling='attention',
+    use_feature_fc=True,
 ):
     """
     Train ABMIL model (optionally with an LSTM temporal-context layer, plain or
@@ -592,6 +629,10 @@ def train_abmil(
     lstm_residual_proj : see ABMIL docstring.
     pooling : {'attention', 'mean', 'last'}
         See ABMIL docstring. Default 'attention' = original ABMIL.
+    use_feature_fc : bool
+        See ABMIL docstring. Default True = original ABMIL (hidden_dim
+        projection applied). False skips feature_fc entirely -- hidden_dim
+        is then ignored.
 
     Returns
     -------
@@ -636,6 +677,7 @@ def train_abmil(
         lstm_residual=lstm_residual,
         lstm_residual_proj=lstm_residual_proj,
         pooling=pooling,
+        use_feature_fc=use_feature_fc,
     ).to(device)
 
     criterion = nn.BCEWithLogitsLoss()
@@ -794,12 +836,12 @@ class ABMILSklearnWrapper(BaseEstimator, ClassifierMixin):
                  learning_rate=1e-3, weight_decay=1e-5, batch_size=4,
                  n_epochs=20, n_labels=5, device='cuda', random_state=42,
                  ensemble=False, ensemble_labels=None,
-                 ensemble_n_optuna_trials=15, ensemble_n_split_in=3,
+                 ensemble_n_optuna_trials=1, ensemble_n_split_in=3,
                  ensemble_n_epochs_max=40,
                  early_stopping=False,
                  use_lstm=False, lstm_hidden_dim=None, lstm_bidirectional=True,
                  lstm_num_layers=1, lstm_residual=False, lstm_residual_proj=False,
-                 pooling='attention'):
+                 pooling='attention', use_feature_fc=True):
         self.hidden_dim = hidden_dim
         self.attention_dim = attention_dim
         self.dropout = dropout
@@ -823,6 +865,7 @@ class ABMILSklearnWrapper(BaseEstimator, ClassifierMixin):
         self.lstm_residual = lstm_residual
         self.lstm_residual_proj = lstm_residual_proj
         self.pooling = pooling
+        self.use_feature_fc = use_feature_fc
 
     def _get_ensemble_labels(self):
         simple = set(self.ensemble_labels) if self.ensemble_labels is not None else {0}
@@ -853,7 +896,7 @@ class ABMILSklearnWrapper(BaseEstimator, ClassifierMixin):
                 use_lstm=self.use_lstm, lstm_hidden_dim=self.lstm_hidden_dim,
                 lstm_bidirectional=self.lstm_bidirectional, lstm_num_layers=self.lstm_num_layers,
                 lstm_residual=self.lstm_residual, lstm_residual_proj=self.lstm_residual_proj,
-                pooling=self.pooling,
+                pooling=self.pooling, use_feature_fc=self.use_feature_fc,
             )
 
             # --- Simple labels: independently-tuned LinearProbe on mean-pooled
@@ -912,7 +955,7 @@ class ABMILSklearnWrapper(BaseEstimator, ClassifierMixin):
                 use_lstm=self.use_lstm, lstm_hidden_dim=self.lstm_hidden_dim,
                 lstm_bidirectional=self.lstm_bidirectional, lstm_num_layers=self.lstm_num_layers,
                 lstm_residual=self.lstm_residual, lstm_residual_proj=self.lstm_residual_proj,
-                pooling=self.pooling,
+                pooling=self.pooling, use_feature_fc=self.use_feature_fc,
             )
 
         return self
@@ -953,6 +996,19 @@ class ABMILSklearnWrapper(BaseEstimator, ClassifierMixin):
 #   'LSTM_residual_proj'        -- same, with the projected-shortcut residual connection
 #   'LSTM_last'                 -- LSTM final hidden state + no attention (alternate
 #                                   attention-free baseline; incompatible with any residual mode)
+#   'ABMIL_no_proj'             -- ABMIL with feature_fc skipped entirely: attention operates
+#                                   directly on raw n_features embeddings, no hidden_dim projection
+#   'ABMIL_LSTM_no_proj'        -- same feature_fc skip, plus a plain (non-residual) LSTM directly
+#                                   on raw n_features before attention pooling
+#   'LSTM_no_proj'              -- same feature_fc skip, plain (non-residual) LSTM + mean pooling
+#                                   (no attention).
+#   'ABMIL_LSTM_no_proj_residual_proj' -- same feature_fc skip as ABMIL_LSTM_no_proj, but WITH
+#                                   the LSTM's own projected-shortcut residual: H_out =
+#                                   Proj(H) + LSTM(H), where Proj maps directly from the raw
+#                                   n_features embedding (rather than from hidden_dim as in
+#                                   ABMIL_LSTM_residual_proj). lstm_hidden_dim is freely tunable.
+#   'LSTM_no_proj_residual_proj'      -- same idea, mean-pooled (no attention) counterpart of
+#                                   ABMIL_LSTM_no_proj_residual_proj.
 VARIANT_WRAPPER_KWARGS = {
     'ABMIL':                    dict(use_lstm=False, pooling='attention'),
     'ABMIL_LSTM':                dict(use_lstm=True,  pooling='attention', lstm_residual=False,
@@ -976,6 +1032,19 @@ VARIANT_WRAPPER_KWARGS = {
     'LSTM_last':                 dict(use_lstm=True,  pooling='last',      lstm_residual=False,
                                        lstm_residual_proj=False,
                                        lstm_bidirectional=True, lstm_num_layers=1),
+    'ABMIL_no_proj':             dict(use_lstm=False, pooling='attention', use_feature_fc=False),
+    'ABMIL_LSTM_no_proj':        dict(use_lstm=True,  pooling='attention', lstm_residual=False,
+                                       lstm_residual_proj=False, use_feature_fc=False,
+                                       lstm_bidirectional=True, lstm_num_layers=1),
+    'LSTM_no_proj':              dict(use_lstm=True,  pooling='mean',      lstm_residual=False,
+                                       lstm_residual_proj=False, use_feature_fc=False,
+                                       lstm_bidirectional=True, lstm_num_layers=1),
+    'ABMIL_LSTM_no_proj_residual_proj': dict(use_lstm=True, pooling='attention', lstm_residual=False,
+                                              lstm_residual_proj=True, use_feature_fc=False,
+                                              lstm_bidirectional=True, lstm_num_layers=1),
+    'LSTM_no_proj_residual_proj':       dict(use_lstm=True, pooling='mean', lstm_residual=False,
+                                              lstm_residual_proj=True, use_feature_fc=False,
+                                              lstm_bidirectional=True, lstm_num_layers=1),
 }
 
 # Base hyperparameter search space, shared by all variants.
@@ -995,6 +1064,18 @@ BASE_PARAM_GRID = {
 LSTM_PROJ_EXTRA_PARAM_GRID = {
     'lstm_hidden_dim': [32, 64, 128, 256],
 }
+
+# All variants with use_feature_fc=False: hidden_dim is irrelevant (feature_fc
+# doesn't exist) so it's dropped from the grid entirely rather than wasting
+# search budget on it; the LSTM-based ones (all but 'ABMIL_no_proj') need
+# lstm_hidden_dim searched instead, since there's no hidden_dim to
+# auto-derive a default from.
+_NO_PROJ_VARIANTS = ('ABMIL_no_proj', 'ABMIL_LSTM_no_proj', 'LSTM_no_proj',
+                      'ABMIL_LSTM_no_proj_residual_proj', 'LSTM_no_proj_residual_proj')
+NO_PROJ_LSTM_EXTRA_PARAM_GRID = {
+    'lstm_hidden_dim': [32, 64, 128, 256],
+}
+
 
 _PROJ_VARIANTS = ('ABMIL_LSTM_residual_proj', 'LSTM_residual_proj')
 
@@ -1019,6 +1100,12 @@ def _build_variant_wrapper_and_grid(variant, n_labels, device, trial_seed,
     params = dict(BASE_PARAM_GRID)
     if variant in _PROJ_VARIANTS:
         params.update(LSTM_PROJ_EXTRA_PARAM_GRID)
+    if variant in _NO_PROJ_VARIANTS:
+        # feature_fc doesn't exist for these -- hidden_dim has zero effect,
+        # so don't waste search budget tuning it.
+        params.pop('hidden_dim', None)
+        if variant != 'ABMIL_no_proj':  # the LSTM-based no-proj variants
+            params.update(NO_PROJ_LSTM_EXTRA_PARAM_GRID)
     return wrapper, params
 
 
@@ -1059,6 +1146,35 @@ def _suggest_variant_params_old(trial, variant):
                      lstm_num_layers=1,
                      lstm_bidirectional=True,
                      lstm_hidden_dim=trial.suggest_categorical("lstm_hidden_dim", [16, 32, 64, 128]))
+    elif variant == "ABMIL_no_proj":
+        extra = dict(attention_dim=trial.suggest_categorical("attention_dim", [16, 32, 64, 128]),
+                     use_lstm=False, pooling="attention", use_feature_fc=False)
+    elif variant == "ABMIL_LSTM_no_proj":
+        extra = dict(attention_dim=trial.suggest_categorical("attention_dim", [16, 32, 64, 128]),
+                     use_lstm=True, pooling="attention", lstm_residual=False,
+                     lstm_residual_proj=False, use_feature_fc=False,
+                     lstm_num_layers=1,
+                     lstm_bidirectional=True,
+                     lstm_hidden_dim=trial.suggest_categorical("lstm_hidden_dim", [16, 32, 64, 128]))
+    elif variant == "LSTM_no_proj":
+        extra = dict(use_lstm=True, pooling="mean", lstm_residual=False,
+                     lstm_residual_proj=False, use_feature_fc=False,
+                     lstm_num_layers=1,
+                     lstm_bidirectional=True,
+                     lstm_hidden_dim=trial.suggest_categorical("lstm_hidden_dim", [16, 32, 64, 128]))
+    elif variant == "ABMIL_LSTM_no_proj_residual_proj":
+        extra = dict(attention_dim=trial.suggest_categorical("attention_dim", [16, 32, 64, 128]),
+                     use_lstm=True, pooling="attention", lstm_residual=False,
+                     lstm_residual_proj=True, use_feature_fc=False,
+                     lstm_num_layers=1,
+                     lstm_bidirectional=True,
+                     lstm_hidden_dim=trial.suggest_categorical("lstm_hidden_dim", [16, 32, 64, 128]))
+    elif variant == "LSTM_no_proj_residual_proj":
+        extra = dict(use_lstm=True, pooling="mean", lstm_residual=False,
+                     lstm_residual_proj=True, use_feature_fc=False,
+                     lstm_num_layers=1,
+                     lstm_bidirectional=True,
+                     lstm_hidden_dim=trial.suggest_categorical("lstm_hidden_dim", [16, 32, 64, 128]))
     else:
         raise ValueError(variant)
 
@@ -1066,13 +1182,22 @@ def _suggest_variant_params_old(trial, variant):
 
 
 def _suggest_variant_params(trial, variant):
-    common = dict(
-        hidden_dim=trial.suggest_categorical("hidden_dim", [128]),
-        dropout=trial.suggest_categorical("dropout", [0.3]),
-        learning_rate=trial.suggest_categorical("learning_rate",[1e-5,5e-5,1e-4,5e-4,1e-3]),
-        weight_decay=trial.suggest_categorical("weight_decay",[1e-5]),
-        batch_size=trial.suggest_categorical("batch_size", [4]),
-    )
+    dropout = trial.suggest_categorical("dropout", [0.3])
+    learning_rate = trial.suggest_categorical("learning_rate",[1e-5,5e-5,1e-4,5e-4,1e-3])
+    weight_decay = trial.suggest_categorical("weight_decay", [1e-5])
+    batch_size = trial.suggest_categorical("batch_size", [4])
+
+    common = dict(dropout=dropout, learning_rate=learning_rate,
+                  weight_decay=weight_decay, batch_size=batch_size)
+
+    # hidden_dim is only meaningful for variants that have a feature_fc
+    # projection -- the *_no_proj[_residual_proj] variants below skip it
+    # entirely (feature_fc doesn't exist), so hidden_dim has zero effect and
+    # isn't sampled for them at all, rather than wasting search budget on it.
+    if variant not in ("ABMIL_no_proj", "ABMIL_LSTM_no_proj", "LSTM_no_proj",
+                        "ABMIL_LSTM_no_proj_residual_proj", "LSTM_no_proj_residual_proj"):
+        common["hidden_dim"] = trial.suggest_categorical("hidden_dim", [128])
+
     if variant == "ABMIL":
         extra = dict(attention_dim=trial.suggest_categorical("attention_dim", [ 64]),
                      use_lstm=False, pooling="attention")
@@ -1098,6 +1223,43 @@ def _suggest_variant_params(trial, variant):
                      lstm_num_layers=1,
                      lstm_bidirectional=True,
                      lstm_hidden_dim=trial.suggest_categorical("lstm_hidden_dim", [128]))
+    elif variant == "ABMIL_no_proj":
+        # Wider attention_dim range here (matching _suggest_variant_params_old)
+        # since attention_dim now projects from the raw n_features dimension
+        # rather than the narrow hidden_dim=128 used elsewhere in this
+        # search space -- a single fixed value would be a much weaker
+        # assumption here than it is for the feature_fc-projected variants.
+        extra = dict(attention_dim=trial.suggest_categorical("attention_dim", [64, 128, 256]),
+                     use_lstm=False, pooling="attention", use_feature_fc=False)
+    elif variant == "ABMIL_LSTM_no_proj":
+        extra = dict(attention_dim=trial.suggest_categorical("attention_dim", [64, 128, 256]),
+                     use_lstm=True, pooling="attention", lstm_residual=False,
+                     lstm_residual_proj=False, use_feature_fc=False,
+                     lstm_num_layers=1,
+                     lstm_bidirectional=True,
+                     lstm_hidden_dim=trial.suggest_categorical("lstm_hidden_dim",  [64, 128, 256]))
+    elif variant == "LSTM_no_proj":
+        extra = dict(use_lstm=True, pooling="mean", lstm_residual=False,
+                     lstm_residual_proj=False, use_feature_fc=False,
+                     lstm_num_layers=1,
+                     lstm_bidirectional=True,
+                     lstm_hidden_dim=trial.suggest_categorical("lstm_hidden_dim",  [64, 128, 256]))
+    elif variant == "ABMIL_LSTM_no_proj_residual_proj":
+        # Same no-feature_fc setup as ABMIL_LSTM_no_proj, but with the LSTM's
+        # own projected-shortcut residual turned on (Proj maps directly from
+        # the raw n_features embedding rather than from hidden_dim).
+        extra = dict(attention_dim=trial.suggest_categorical("attention_dim", [64, 128, 256]),
+                     use_lstm=True, pooling="attention", lstm_residual=False,
+                     lstm_residual_proj=True, use_feature_fc=False,
+                     lstm_num_layers=1,
+                     lstm_bidirectional=True,
+                     lstm_hidden_dim=trial.suggest_categorical("lstm_hidden_dim", [64, 128, 256]))
+    elif variant == "LSTM_no_proj_residual_proj":
+        extra = dict(use_lstm=True, pooling="mean", lstm_residual=False,
+                     lstm_residual_proj=True, use_feature_fc=False,
+                     lstm_num_layers=1,
+                     lstm_bidirectional=True,
+                     lstm_hidden_dim=trial.suggest_categorical("lstm_hidden_dim", [64, 128, 256]))
     else:
         raise ValueError(variant)
 
@@ -1132,7 +1294,7 @@ def _make_optuna_objective(variant, X_bags_train, y_train, n_split_in, n_epochs_
         fold_train_loss_curves = []
         fold_val_loss_curves = []
         #DEBUG
-        print("Start inner loop")
+        print("Start inner loop)")
         constant = 0
         for tr_idx, val_idx in inner_cv.split(X_bags_train, y_train):
             constant = constant + 1
@@ -1147,7 +1309,7 @@ def _make_optuna_objective(variant, X_bags_train, y_train, n_split_in, n_epochs_
                 n_labels=y_train.shape[1], n_epochs=n_epochs_max,
                 batch_size=common["batch_size"], verbose=False, random_state=seed,
                 early_stopping= False,
-                hidden_dim=common["hidden_dim"], dropout=common["dropout"],
+                hidden_dim=common.get("hidden_dim", 256), dropout=common["dropout"],
                 learning_rate=common["learning_rate"], weight_decay=common["weight_decay"],
                 attention_dim=extra.get("attention_dim", 128),
                 use_lstm=extra["use_lstm"], pooling=extra["pooling"],
@@ -1156,6 +1318,7 @@ def _make_optuna_objective(variant, X_bags_train, y_train, n_split_in, n_epochs_
                 lstm_hidden_dim=extra.get("lstm_hidden_dim", None),
                 lstm_num_layers=extra.get("lstm_num_layers", 1),
                 lstm_bidirectional=extra.get("lstm_bidirectional", False),
+                use_feature_fc=extra.get("use_feature_fc", True),
             )
             fold_val_ap_curves.append(history["val_ap"])
             fold_train_loss_curves.append(history["train_loss"])
@@ -1270,7 +1433,7 @@ def abmil_classifier_tuned_optuna(X_bags, y, n_split_out=5, n_split_in=5, num_tr
                     ensemble_n_optuna_trials=ensemble_n_optuna_trials,
                     ensemble_n_split_in=ensemble_n_split_in,
                     ensemble_n_epochs_max=ensemble_n_epochs_max,
-                    hidden_dim=best_params["hidden_dim"], dropout=best_params["dropout"],
+                    hidden_dim=best_params.get("hidden_dim", 256), dropout=best_params["dropout"],
                     learning_rate=best_params["learning_rate"], weight_decay=best_params["weight_decay"],
                     attention_dim=best_params.get("attention_dim", 128),
                     use_lstm=extra["use_lstm"], pooling=extra["pooling"],
@@ -1279,6 +1442,7 @@ def abmil_classifier_tuned_optuna(X_bags, y, n_split_out=5, n_split_in=5, num_tr
                     lstm_hidden_dim=extra.get("lstm_hidden_dim", None),
                     lstm_num_layers=extra.get("lstm_num_layers", 1),
                     lstm_bidirectional=extra.get("lstm_bidirectional", True),
+                    use_feature_fc=extra.get("use_feature_fc", True),
                 )
                 final_model.fit(X_bags_train, y_train)
 
@@ -1691,7 +1855,7 @@ def abmil_classifier_deployement(X_bags, y, n_split=5, random_state=42, variant=
     torch.cuda.manual_seed_all(trial_seed)
 
     wrapper = ABMILSklearnWrapper(
-        n_labels=y.shape[1], n_epochs=20, batch_size=4,
+        n_labels=y.shape[1], n_epochs=40, batch_size=4,
         device=device,
         ensemble=ensemble, ensemble_labels=ensemble_labels,
         random_state=trial_seed,
@@ -1756,8 +1920,8 @@ def abmil_classifier_deployement(X_bags, y, n_split=5, random_state=42, variant=
 
 
 def train_abmil_all_data(X_bags, y, random_state=42, variant='ABMIL',
-                          hidden_dim=256, attention_dim=128, dropout=0.1,
-                          learning_rate=1e-4, weight_decay=1e-6,
+                          hidden_dim=128, attention_dim=64, dropout=0.3,
+                          learning_rate=1e-4, weight_decay=1e-5,
                           lstm_hidden_dim=None):
     """
     Trains a chosen variant on all the data using given hyperparameters
@@ -1782,7 +1946,7 @@ def train_abmil_all_data(X_bags, y, random_state=42, variant='ABMIL',
     torch.cuda.manual_seed_all(trial_seed)
 
     clf = ABMILSklearnWrapper(
-        n_labels=y.shape[1], n_epochs=20, batch_size=4,
+        n_labels=y.shape[1], n_epochs=40, batch_size=4,
         device=device,
         ensemble=ensemble, ensemble_labels=ensemble_labels,
         random_state=trial_seed, hidden_dim=hidden_dim, attention_dim=attention_dim,
@@ -1844,6 +2008,14 @@ def evaluate_abmil_ood(fitted_wrapper, X_bags_ood):
 #       X_bags, y, variants=('ABMIL_LSTM_residual_proj',),
 #       ensemble=True, ensemble_labels=(0,),          # 0 == type_a
 #       ensemble_n_optuna_trials=15, ensemble_n_split_in=3, ensemble_n_epochs_max=40,
+#   )
+#
+# No-projection variants, plain or with the LSTM's own projected residual:
+#   quick_results = abmil_classifier_quick(
+#       X_bags, y, num_trials=3,
+#       variants=('ABMIL_no_proj', 'ABMIL_LSTM_no_proj_residual_proj',
+#                 'LSTM_no_proj_residual_proj'),
+#       lstm_hidden_dim=128,
 #   )
 #
 # Train a single ABMIL_LSTM_residual_proj model directly (bypassing tuning) for

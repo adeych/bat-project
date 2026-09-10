@@ -285,7 +285,7 @@ def load_encoder(model_name, device="cuda"):
             'device_id': 0,
             'gpu_mem_limit': 12 * 1024 * 1024 * 1024,  # Cap at 12 GB VRAM
             'arena_extend_strategy': 'kSameAsRequested',  # Allocates memory strictly on demand
-        }
+        } 
         providers = (
             ["CPUExecutionProvider"] if device == "cpu"
             else [('CUDAExecutionProvider', cuda_options), 'CPUExecutionProvider']

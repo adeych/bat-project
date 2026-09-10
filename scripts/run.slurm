@@ -16,4 +16,4 @@ source /idiap/temp/adeych/miniforge3/bin/activate temp-env-4
 
 cd /idiap/home/adeych/bat-project/tests
 
-python3 mil_opt.py --algorithm "ABMIL" --ensembling --name "3"
+python3 mil_opt2.py --algorithm "Mean" --no-ensembling --name "6" --proj
