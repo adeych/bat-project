@@ -6,12 +6,12 @@ species).
 
 Two kinds of results, deliberately treated differently:
 
-1. PER-SPECIES AP, with bootstrap percentile confidence intervals.
+1. PER-SPECIES AP, with a bootstrap standard deviation.
    Bootstrapping resamples RECORDINGS WITHIN each species (with replacement,
    same size as that species' own count) -- not the whole OOD set pooled
-   together -- so each species' CI reflects only its own sampling
+   together -- so each species' std reflects only its own sampling
    uncertainty. Species with fewer than `min_n` recordings are skipped
-   entirely (returned separately, not silently dropped) since a bootstrap CI
+   entirely (returned separately, not silently dropped) since a bootstrap std
    on a handful of examples isn't informative. The row with no species
    assigned is excluded from this breakdown (there's nothing to group it
    into) but is NOT excluded from the overall metrics below, since it still
@@ -43,19 +43,19 @@ def bootstrap_ap_per_species(
     species_col='species_latin',
     min_n=3,
     n_bootstrap=1000,
-    ci=0.95,
     random_state=42,
 ):
     """
-    Per-(species, label) AP with a within-species bootstrap percentile CI,
-    plus a per-species cmAP (macro-average over whichever labels are
-    actually defined for that species) with its own bootstrap CI, appended
-    into the SAME long-format table as a pseudo-label row ('cmAP').
+    Per-(species, label) AP with a within-species bootstrap standard
+    deviation, plus a per-species cmAP (macro-average over whichever labels
+    are actually defined for that species) with its own bootstrap standard
+    deviation, appended into the SAME long-format table as a pseudo-label
+    row ('cmAP').
 
     Each bootstrap iteration draws ONE shared resample of a species'
     recordings (not a separate resample per label) -- every defined label's
     AP, and that iteration's cmAP, are computed off that same resample. This
-    is what makes the cmAP CI a real macro-average of correlated draws
+    is what makes the cmAP std a real macro-average of correlated draws
     rather than a combination of five independently-resampled distributions,
     and it's also why results are NOT bit-identical to a version that
     resampled each label independently, even at the same random_state.
@@ -84,13 +84,10 @@ def bootstrap_ap_per_species(
         Column in metadata_df to group by (default 'species_latin').
     min_n : int
         Minimum recordings a species needs (after dropping rows with no
-        species_col value) to get a per-species AP/CI/cmAP at all. Species
+        species_col value) to get a per-species AP/std/cmAP at all. Species
         below this are reported in `excluded_df`, not silently dropped.
     n_bootstrap : int
         Bootstrap iterations per species (shared across its labels and cmAP).
-    ci : float
-        Confidence level for the percentile interval (e.g. 0.95 -> 2.5th/
-        97.5th percentiles).
     random_state : int
         Base seed. Each species gets its own independent, reproducible RNG
         (seeded as random_state + species rank), so results are stable
@@ -100,17 +97,19 @@ def bootstrap_ap_per_species(
     -------
     per_species_df : pd.DataFrame
         One row per (species, label) PLUS one row per species with
-        label='cmAP', columns: species, label, n, n_positive, AP, ci_low,
-        ci_high, n_valid_bootstrap, n_labels_in_cmap, note.
+        label='cmAP', columns: species, label, n, n_positive, AP, std,
+        n_valid_bootstrap, n_labels_in_cmap, note.
         n_positive/n_labels_in_cmap are NaN on ordinary label rows (not
         applicable); n_labels_in_cmap is NaN on ordinary label rows and set
-        on cmAP rows. AP/ci_low/ci_high are NaN when a (species, label) has
-        only one class present (AP undefined), or when a species has NO
-        defined labels at all (cmAP undefined). If enough individual
-        bootstrap resamples were ALSO degenerate (fewer than 50 valid
-        resamples survived for that label, or fewer than 50 iterations had
-        at least one defined label survive for cmAP), ci_low/ci_high are
-        NaN with a note even though the point estimate itself is fine.
+        on cmAP rows. AP/std are NaN when a (species, label) has only one
+        class present (AP undefined), or when a species has NO defined
+        labels at all (cmAP undefined). If enough individual bootstrap
+        resamples were ALSO degenerate (fewer than 50 valid resamples
+        survived for that label, or fewer than 50 iterations had at least
+        one defined label survive for cmAP), std is NaN with a note even
+        though the point estimate itself is fine. std uses ddof=1 (sample
+        standard deviation), matching the convention used elsewhere in this
+        project (e.g. architecture_comparison.py's trial-level std_AP).
     excluded_df : pd.DataFrame
         One row per species that was skipped for having fewer than min_n
         recordings, or the (up to one) row with no species_col value at all.
@@ -200,7 +199,7 @@ def bootstrap_ap_per_species(
             if label not in defined_labels:
                 rows.append({
                     'species': species, 'label': label, 'n': n, 'n_positive': n_pos,
-                    'AP': np.nan, 'ci_low': np.nan, 'ci_high': np.nan,
+                    'AP': np.nan, 'std': np.nan,
                     'n_valid_bootstrap': 0, 'n_labels_in_cmap': np.nan,
                     'note': 'undefined -- only one class present',
                 })
@@ -209,16 +208,15 @@ def bootstrap_ap_per_species(
             boot_aps = boot_aps_by_label[label]
             n_valid = len(boot_aps)
             if n_valid < 50:
-                ci_low, ci_high = np.nan, np.nan
-                note = f'only {n_valid}/{n_bootstrap} valid resamples -- CI unreliable'
+                std = np.nan
+                note = f'only {n_valid}/{n_bootstrap} valid resamples -- std unreliable'
             else:
-                alpha = (1 - ci) / 2
-                ci_low, ci_high = np.percentile(boot_aps, [100 * alpha, 100 * (1 - alpha)])
+                std = float(np.std(boot_aps, ddof=1))
                 note = ''
 
             rows.append({
                 'species': species, 'label': label, 'n': n, 'n_positive': n_pos,
-                'AP': point_ap[label], 'ci_low': ci_low, 'ci_high': ci_high,
+                'AP': point_ap[label], 'std': std,
                 'n_valid_bootstrap': n_valid, 'n_labels_in_cmap': np.nan, 'note': note,
             })
 
@@ -227,22 +225,21 @@ def bootstrap_ap_per_species(
             point_cmap = float(np.mean([point_ap[l] for l in defined_labels]))
             n_valid_cmap = len(boot_cmaps)
             if n_valid_cmap < 50:
-                ci_low_c, ci_high_c = np.nan, np.nan
-                note_c = f'only {n_valid_cmap}/{n_bootstrap} valid resamples -- CI unreliable'
+                std_c = np.nan
+                note_c = f'only {n_valid_cmap}/{n_bootstrap} valid resamples -- std unreliable'
             else:
-                alpha = (1 - ci) / 2
-                ci_low_c, ci_high_c = np.percentile(boot_cmaps, [100 * alpha, 100 * (1 - alpha)])
+                std_c = float(np.std(boot_cmaps, ddof=1))
                 note_c = ''
             rows.append({
                 'species': species, 'label': 'cmAP', 'n': n, 'n_positive': np.nan,
-                'AP': point_cmap, 'ci_low': ci_low_c, 'ci_high': ci_high_c,
+                'AP': point_cmap, 'std': std_c,
                 'n_valid_bootstrap': n_valid_cmap, 'n_labels_in_cmap': len(defined_labels),
                 'note': note_c,
             })
         else:
             rows.append({
                 'species': species, 'label': 'cmAP', 'n': n, 'n_positive': np.nan,
-                'AP': np.nan, 'ci_low': np.nan, 'ci_high': np.nan,
+                'AP': np.nan, 'std': np.nan,
                 'n_valid_bootstrap': 0, 'n_labels_in_cmap': 0,
                 'note': 'no labels with both classes present for this species',
             })
@@ -296,12 +293,11 @@ def evaluate_ood(
     species_col='species_latin',
     min_n=3,
     n_bootstrap=1000,
-    ci=0.95,
     random_state=42,
 ):
     """
-    Full OOD evaluation in one call: per-species AP with within-species
-    bootstrap percentile CIs (see bootstrap_ap_per_species) plus overall
+    Full OOD evaluation in one call: per-species AP with a within-species
+    bootstrap standard deviation (see bootstrap_ap_per_species) plus overall
     per-label AP and macro-cmAP as plain point estimates across the whole
     OOD set (see overall_ap_summary). Model predictions are computed once
     and shared between both.
@@ -317,7 +313,7 @@ def evaluate_ood(
     per_species_df, excluded_df, y_pred_ood = bootstrap_ap_per_species(
         model, X_bags_ood, metadata_df,
         label_cols=label_cols, species_col=species_col, min_n=min_n,
-        n_bootstrap=n_bootstrap, ci=ci, random_state=random_state,
+        n_bootstrap=n_bootstrap, random_state=random_state,
     )
     overall_df = overall_ap_summary(metadata_df, y_pred_ood, label_cols=label_cols)
     return per_species_df, excluded_df, overall_df
@@ -339,19 +335,21 @@ def _escape_latex(text):
     return ''.join(_LATEX_ESCAPES.get(ch, ch) for ch in str(text))
 
 
-def _format_cell(ap, ci_low=None, ci_high=None, decimals=3):
+def _format_cell(ap, std=None, decimals=3):
     """
-    Formats one table cell: '--' for NaN/undefined AP, 'AP [ci_low, ci_high]'
-    when both CI bounds are given and finite, or just 'AP' (no brackets)
-    when ci_low/ci_high are None or NaN -- used for the point-estimate-only
-    Overall row, which has no bootstrap CI by design.
+    Formats one table cell: '--' for NaN/undefined AP, 'AP $\\pm$ std' when
+    std is given and finite, or just 'AP' (no $\\pm$) when std is None or
+    NaN -- used for the point-estimate-only Overall row, which has no
+    bootstrap std by design. Matches the 'mean $\\pm$ std' convention used
+    for trial-level results elsewhere in this project (e.g.
+    architecture_comparison.py's _format_mean_std).
     """
     if pd.isna(ap):
         return '--'
     ap_str = f"{ap:.{decimals}f}"
-    if ci_low is None or ci_high is None or pd.isna(ci_low) or pd.isna(ci_high):
+    if std is None or pd.isna(std):
         return ap_str
-    return f"{ap_str} [{ci_low:.{decimals}f}, {ci_high:.{decimals}f}]"
+    return f"{ap_str} $\\pm$ {std:.{decimals}f}"
 
 
 def per_species_latex_table(
@@ -360,7 +358,7 @@ def per_species_latex_table(
     label_display_names=None,
     decimals=3,
     caption="Out-of-distribution average precision (AP) by species and call type, "
-            "with 95\\% bootstrap percentile confidence intervals.",
+            "with bootstrap standard deviations.",
     table_label='tab:ood_ap_species',
     resize_to_fit=True,
     output_path='ood_ap_table.tex',
@@ -373,7 +371,7 @@ def per_species_latex_table(
     bootstrap_ap_per_species), and a final bold 'Overall' row (from
     overall_df).
 
-    Each species-row cell is 'AP [ci_low, ci_high]' to `decimals` places, or
+    Each species-row cell is 'AP $\\pm$ std' to `decimals` places, or
     '--' where AP is NaN (only one class present for that species/label --
     see bootstrap_ap_per_species). A species' cmAP cell gets a
     '$\\dagger$' marker (with a footnote explaining it) whenever it's
@@ -382,8 +380,8 @@ def per_species_latex_table(
     species with only one defined label gets a cmAP numerically equal to
     that single AP; the marker makes that visible rather than implying every
     species' cmAP rests on the same footing. The Overall row has no
-    bootstrap CI by design (overall_ap_summary is point-estimates-only), so
-    its cells show just the AP value, no brackets. Species already excluded
+    bootstrap std by design (overall_ap_summary is point-estimates-only), so
+    its cells show just the AP value, no $\\pm$. Species already excluded
     from per_species_df (below min_n, or missing a species assignment) are
     NOT shown as rows -- if `excluded_df` is passed, a footnote below the
     table reports how many were left out and why, and the Overall row's `n`
@@ -404,7 +402,7 @@ def per_species_latex_table(
          'type_d': 'Type D', 'echo': 'Echolocation'} -- override any/all of
         these if you want different header text.
     decimals : int
-        Decimal places for AP and CI bounds.
+        Decimal places for AP and std.
     caption, table_label : str
         LaTeX \\caption{} and \\label{} contents.
     output_path : str or None
@@ -412,8 +410,8 @@ def per_species_latex_table(
         \\input{}'d into a larger document -- not a standalone compilable
         document). Pass None to skip writing and just get the string back.
     resize_to_fit : bool
-        With CIs crammed into every cell, this table is genuinely wide (9
-        columns including bracketed ranges) -- left unscaled it overflows a
+        With a $\\pm$ std value crammed into every cell, this table is
+        still fairly wide (9 columns) -- left unscaled it can overflow a
         standard \\textwidth (confirmed by actually compiling it). When True
         (default), wraps the tabular in \\resizebox{\\textwidth}{!}{...} so
         it's guaranteed to fit the page width, at the cost of a smaller
@@ -444,12 +442,12 @@ def per_species_latex_table(
         for label in label_cols:
             if label in sp_df.index:
                 r = sp_df.loc[label]
-                cells.append(_format_cell(r['AP'], r['ci_low'], r['ci_high'], decimals))
+                cells.append(_format_cell(r['AP'], r['std'], decimals))
             else:
                 cells.append('--')
         if 'cmAP' in sp_df.index:
             r = sp_df.loc['cmAP']
-            cmap_cell = _format_cell(r['AP'], r['ci_low'], r['ci_high'], decimals)
+            cmap_cell = _format_cell(r['AP'], r['std'], decimals)
             n_used = r['n_labels_in_cmap']
             # Flag when a species' cmAP isn't averaged over the full label
             # set -- e.g. Pipistrellus pygmaeus has only one defined label,
@@ -542,7 +540,7 @@ def per_species_latex_table(
 #   )
 #
 #   print(overall_df)                                  # type_a..echo + cmAP, point estimates
-#   print(per_species_df.sort_values('AP'))             # per (species, label) + 95% CI
+#   print(per_species_df.sort_values('AP'))             # per (species, label) + bootstrap std
 #   print(excluded_df)                                  # species skipped (n < min_n) or unassigned
 #
 #   latex = per_species_latex_table(
